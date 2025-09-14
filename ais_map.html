@@ -1,0 +1,2184 @@
+<!--
+    NMEA AIS Real-time Decoder Web Application
+
+    Overview:
+    ----------
+    This HTML file implements a real-time AIS (Automatic Identification System) decoder and vessel map visualization tool.
+    It provides a modern, interactive UI for decoding, filtering, and displaying AIS data streams (NMEA sentences) on a Leaflet map.
+
+    Main Features:
+    --------------
+    - Real-time TCP stream connection to AIS data sources via a WebSocket proxy.
+    - File upload and manual input for batch or single NMEA sentence processing.
+    - Interactive map with multiple base layers (dark, light, OSM, satellite).
+    - Vessel markers with dynamic icons, tracks, and popups showing detailed info.
+    - Sidebar panels for input sources, filters, settings, and vessel list/details.
+    - Vessel type filtering, searching, and sorting.
+    - Performance indicators and optimization info.
+    - Historical playback controls (UI present, logic to be implemented).
+    - Theme toggle (day/night mode) with automatic map style switching.
+    - AIS base station detection and display.
+    - Responsive design for desktop and mobile.
+
+    Main JavaScript Class:
+    ----------------------
+    OptimizedNMEAAISDecoder
+      - Handles all map, data, UI, and connection logic.
+      - Decodes NMEA sentences (AIS types 1-5).
+      - Manages vessel data, tracks, markers, and base stations.
+      - Implements viewport culling and batch processing for performance.
+      - Provides UI event bindings and updates for all controls.
+      - Supports vessel selection, details panel, and popup display.
+      - Manages TCP/WebSocket connection to AIS data source.
+
+    Key UI Components:
+    ------------------
+    - Top bar: App title, stats, theme toggle, connection status, performance.
+    - Left sidebars: Input sources, filters, settings.
+    - Right sidebar: Vessel type filters, vessel list, vessel details.
+    - Map container: Leaflet map, real-time/live indicator, optimization info.
+    - Time slider: Historical playback controls (UI only).
+
+    Usage Notes:
+    ------------
+    - Requires a WebSocket proxy server to connect to TCP AIS data sources.
+    - All decoding and rendering is performed client-side in the browser.
+    - Designed for extensibility and performance with large AIS datasets.
+
+    Author: (Your Name or Organization)
+    Version: 0.9
+    License: MIT or as appropriate
+
+-->
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NMEA AIS Real-time Decoder</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+    <style>
+        :root {
+            --bg-primary: #0a0a0a;
+            --bg-secondary: linear-gradient(135deg, #2c3e50 0%, #34495e 100%);
+            --bg-secondary-solid: #2c3e50;
+            --border-color-light: #34495e;
+            --border-color-alpha: rgba(255, 255, 255, 0.1);
+            --text-primary: #e0e0e0;
+            --text-secondary: #bdc3c7;
+            --text-muted: #95a5a6;
+            --color-accent: #3498db;
+            --color-accent-dark: #2980b9;
+            --color-accent-alpha: rgba(52, 152, 219, 0.2);
+            --input-bg: rgba(255, 255, 255, 0.05);
+            --map-filter: hue-rotate(200deg) brightness(0.9);
+        }
+
+        .light-mode {
+            --bg-primary: #f4f6f8;
+            --bg-secondary: linear-gradient(135deg, #ffffff 0%, #e9ecef 100%);
+            --bg-secondary-solid: #ffffff;
+            --border-color-light: #dee2e6;
+            --border-color-alpha: rgba(0, 0, 0, 0.1);
+            --text-primary: #212529;
+            --text-secondary: #495057;
+            --text-muted: #6c757d;
+            --color-accent: #007bff;
+            --color-accent-dark: #0056b3;
+            --color-accent-alpha: rgba(0, 123, 255, 0.1);
+            --input-bg: rgba(0, 0, 0, 0.05);
+            --map-filter: none;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .container {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        .top-bar {
+            position: fixed;
+            /* Make it independent of scrolling/zooming */
+            top: 0;
+            left: 0;
+            right: 0;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color-light);
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 20px;
+            height: 50px;
+            z-index: 2000;
+            /* Keep it above Leaflet controls */
+        }
+
+        .app-title {
+            color: var(--color-accent);
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        .stats-bar {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .stat-item {
+            text-align: center;
+            min-width: 50px;
+        }
+
+        .stat-value {
+            font-size: 14px;
+            font-weight: bold;
+            color: var(--color-accent);
+            display: block;
+            line-height: 1;
+        }
+
+        .stat-label {
+            font-size: 9px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            margin-top: 1px;
+        }
+
+        .theme-toggle-btn {
+            background: var(--input-bg);
+            border: 1px solid var(--border-color-alpha);
+            color: var(--text-secondary);
+            padding: 6px;
+            border-radius: 50%;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 30px;
+            height: 30px;
+            margin-left: 15px;
+        }
+
+        .theme-toggle-btn:hover {
+            background: var(--color-accent-alpha);
+        }
+
+        .connection-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .connection-status.connected {
+            background: rgba(39, 174, 96, 0.2);
+            color: #27ae60;
+            border: 1px solid rgba(39, 174, 96, 0.3);
+        }
+
+        .connection-status.disconnected {
+            background: rgba(149, 165, 166, 0.2);
+            color: #95a5a6;
+            border: 1px solid rgba(149, 165, 166, 0.3);
+        }
+
+        .connection-status.error {
+            background: rgba(231, 76, 60, 0.2);
+            color: #e74c3c;
+            border: 1px solid rgba(231, 76, 60, 0.3);
+        }
+
+        .status-indicator {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: currentColor;
+        }
+
+        .performance-indicator {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 10px;
+            color: var(--text-muted);
+        }
+
+        .perf-good {
+            color: #27ae60;
+        }
+
+        .perf-warning {
+            color: #f39c12;
+        }
+
+        .perf-bad {
+            color: #e74c3c;
+        }
+
+        .main-content {
+            display: flex;
+            flex: 1;
+            position: relative;
+            margin-top: 50px;
+        }
+
+        .sidebar {
+            width: 0;
+            background: var(--bg-secondary);
+            transition: width 0.3s ease;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            z-index: 100;
+        }
+
+        .sidebar.open.left {
+            width: 320px;
+        }
+
+        .sidebar.left {
+            border-right: 1px solid var(--border-color-light);
+        }
+
+        .sidebar.open.right {
+            width: 320px;
+        }
+
+        .sidebar.right {
+            border-left: 1px solid var(--border-color-light);
+        }
+
+        .sidebar-toggle {
+            position: absolute;
+            background: rgba(52, 152, 219, 0.9);
+            color: white;
+            border: none;
+            padding: 10px 8px;
+            cursor: pointer;
+            font-size: 12px;
+            z-index: 1000;
+            transition: all 0.3s ease;
+            writing-mode: vertical-lr;
+        }
+
+        .light-mode .sidebar-toggle {
+            background: rgba(0, 123, 255, 0.9);
+        }
+
+        .sidebar-toggle:hover {
+            background: var(--color-accent);
+        }
+
+        .sidebar-toggle.left {
+            left: 10px;
+            border-radius: 0 6px 6px 0;
+        }
+
+        .sidebar.open.left~.sidebar-toggle.left {
+            left: 320px;
+            border-radius: 6px 0 0 6px;
+        }
+
+        .sidebar-toggle.right {
+            right: 10px;
+            border-radius: 6px 0 0 6px;
+        }
+
+        .sidebar.open.right~.sidebar-toggle.right {
+            right: 320px;
+            border-radius: 0 6px 6px 0;
+        }
+
+        #input-sidebar-toggle {
+            top: 120px;
+        }
+
+        #filters-sidebar-toggle {
+            top: 205px;
+        }
+
+        #settings-sidebar-toggle {
+            top: 280px;
+        }
+
+        #vessel-sidebar-toggle {
+            top: 120px;
+        }
+
+        summary {
+            cursor: pointer;
+            position: relative;
+            user-select: none;
+            /* Prevents text selection */
+            list-style: none;
+            /* Remove default arrow */
+        }
+
+        summary::-webkit-details-marker {
+            display: none;
+            /* For Chrome */
+        }
+
+        summary::after {
+            content: '+';
+            position: absolute;
+            right: 10px;
+            font-size: 20px;
+            font-weight: bold;
+            color: var(--text-secondary);
+            top: 50%;
+            transform: translateY(-50%);
+        }
+
+        details[open]>summary::after {
+            content: '−';
+        }
+
+
+
+        .input-tabs {
+            display: flex;
+            background: rgba(0, 0, 0, 0.2);
+            border-bottom: 1px solid var(--border-color-alpha);
+        }
+
+        .light-mode .input-tabs {
+            background: rgba(0, 0, 0, 0.05);
+        }
+
+
+        .input-tab {
+            flex: 1;
+            padding: 12px 8px;
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            border-bottom: 2px solid transparent;
+        }
+
+        .input-tab:hover {
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--text-primary);
+        }
+
+        .light-mode .input-tab:hover {
+            background: rgba(0, 0, 0, 0.03);
+        }
+
+        .input-tab.active {
+            color: var(--color-accent);
+            border-bottom-color: var(--color-accent);
+            background: var(--color-accent-alpha);
+        }
+
+        .input-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+        }
+
+        .input-panel {
+            display: none;
+        }
+
+        .input-panel.active {
+            display: block;
+        }
+
+        .form-section {
+            margin-bottom: 25px;
+        }
+
+        .form-section summary {
+            color: var(--color-accent);
+            margin-bottom: 15px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .input-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 6px;
+            color: var(--text-secondary);
+            font-size: 13px;
+            font-weight: 500;
+        }
+
+        input,
+        textarea,
+        select {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid var(--border-color-alpha);
+            border-radius: 6px;
+            background: var(--input-bg);
+            color: var(--text-primary);
+            font-size: 13px;
+            transition: all 0.3s ease;
+        }
+
+        input:focus,
+        textarea:focus,
+        select:focus {
+            outline: none;
+            border-color: var(--color-accent);
+            box-shadow: 0 0 0 2px var(--color-accent-alpha);
+        }
+
+        textarea {
+            height: 80px;
+            font-family: 'Courier New', monospace;
+            resize: vertical;
+        }
+
+        button {
+            padding: 10px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            margin-right: 8px;
+            margin-bottom: 8px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--color-accent) 0%, var(--color-accent-dark) 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 2px 8px var(--color-accent-alpha);
+        }
+
+        .btn-success {
+            background: linear-gradient(135deg, #27ae60 0%, #229954 100%);
+            color: white;
+        }
+
+        .btn-success:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 2px 8px rgba(39, 174, 96, 0.3);
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+            color: white;
+        }
+
+        .btn-danger:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 2px 8px rgba(231, 76, 60, 0.3);
+        }
+
+        .btn-warning {
+            background: linear-gradient(135deg, #f39c12 0%, #e67e22 100%);
+            color: white;
+        }
+
+        .btn-warning:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 2px 8px rgba(243, 156, 18, 0.3);
+        }
+
+        .map-container {
+            flex: 1;
+
+            position: relative;
+            background: var(--bg-primary);
+        }
+
+        #map {
+            position: absolute;
+            /* or relative depending on layout */
+            top: 0;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 100%;
+            width: 100%;
+            filter: var(--map-filter);
+        }
+
+
+
+
+
+        #vessel-details-panel {
+            //max-height: 200px; /* Set a fixed maximum height */
+            overflow-y: auto;
+            /* Enable vertical scrolling */
+            overflow-x: hidden;
+            /* Hide horizontal scrollbar */
+            border: 1px solid var(--border-color-alpha);
+            border-radius: 6px;
+        }
+
+
+
+        .filter-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+
+        .filter-checkbox {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 11px;
+            padding: 4px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background 0.2s ease;
+        }
+
+        .filter-checkbox:hover {
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .light-mode .filter-checkbox:hover {
+            background: rgba(0, 0, 0, 0.03);
+        }
+
+        .filter-checkbox input[type="checkbox"] {
+            width: auto;
+            margin: 0;
+        }
+
+        .filter-color {
+            width: 12px;
+            height: 12px;
+            border-radius: 2px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+
+
+        .vessel-count-badge {
+            background: var(--color-accent-alpha);
+            color: var(--color-accent);
+            padding: 2px 6px;
+            border-radius: 8px;
+            font-size: 10px;
+            font-weight: 500;
+        }
+
+        .vessel-search {
+            margin-bottom: 10px;
+            flex-shrink: 0;
+        }
+
+        .vessel-sort-controls {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 10px;
+            flex-shrink: 0;
+        }
+
+        .sort-btn {
+            padding: 4px 8px;
+            border: 1px solid var(--border-color-alpha);
+            background: var(--input-bg);
+            color: var(--text-secondary);
+            font-size: 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .sort-btn:hover {
+            background: var(--color-accent-alpha);
+        }
+
+        .sort-btn.active {
+            background: var(--color-accent);
+            color: white;
+        }
+
+        .vessel-list {
+            flex: 1;
+            min-height: 200px;
+            max-height: 450px;
+            overflow-y: auto;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 6px;
+            border: 1px solid var(--border-color-alpha);
+
+        }
+
+
+        .light-mode .vessel-list {
+            background: rgba(0, 0, 0, 0.05);
+        }
+
+        .vessel-list::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .vessel-list::-webkit-scrollbar-track {
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 3px;
+        }
+
+        .vessel-list::-webkit-scrollbar-thumb {
+            background: var(--color-accent);
+            border-radius: 3px;
+        }
+
+        .vessel-list::-webkit-scrollbar-thumb:hover {
+            background: var(--color-accent-dark);
+        }
+
+        .vessel-item {
+            padding: 10px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            cursor: pointer;
+            transition: all 0.2s ease;
+            font-size: 12px;
+        }
+
+        .light-mode .vessel-item {
+            border-bottom-color: rgba(0, 0, 0, 0.05);
+        }
+
+        .vessel-item:hover {
+            background: var(--color-accent-alpha);
+        }
+
+
+
+        .vessel-item:last-child {
+            border-bottom: none;
+        }
+
+        .vessel-name {
+            font-weight: 600;
+            color: var(--color-accent);
+        }
+
+        .vessel-mmsi {
+            color: var(--text-secondary);
+            font-size: 10px;
+        }
+
+
+
+        .time-slider-container {
+            height: 0;
+            background: var(--bg-secondary);
+            border-top: 1px solid var(--border-color-light);
+            transition: height 0.3s ease;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .time-slider-container.open {
+            height: 80px;
+        }
+
+        .time-slider-toggle {
+            position: absolute;
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(52, 152, 219, 0.9);
+            color: white;
+            border: none;
+            border-radius: 6px 6px 0 0;
+            padding: 8px 16px;
+            cursor: pointer;
+            font-size: 12px;
+            z-index: 1000;
+            transition: all 0.3s ease;
+        }
+
+        .light-mode .time-slider-toggle {
+            background: rgba(0, 123, 255, 0.9);
+        }
+
+        .time-slider-toggle:hover {
+            background: var(--color-accent);
+        }
+
+        .time-slider-container.open~.time-slider-toggle {
+            bottom: 80px;
+            border-radius: 0 0 6px 6px;
+        }
+
+        .time-controls {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            padding: 15px 20px;
+            height: 100%;
+        }
+
+        .playback-controls {
+            display: flex;
+            gap: 8px;
+        }
+
+        .playback-btn {
+            background: var(--color-accent-alpha);
+            border: 1px solid var(--border-color-alpha);
+            color: var(--color-accent);
+            padding: 6px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.3s ease;
+        }
+
+        .playback-btn:hover {
+            background: var(--color-accent-alpha);
+            opacity: 0.8;
+        }
+
+        .playback-btn.active {
+            background: var(--color-accent);
+            color: white;
+        }
+
+        .time-slider {
+            flex: 1;
+            height: 6px;
+            background: var(--input-bg);
+            border-radius: 3px;
+            position: relative;
+            cursor: pointer;
+        }
+
+        .time-slider-track {
+            height: 100%;
+            background: var(--color-accent);
+            border-radius: 3px;
+            width: 0%;
+            transition: width 0.1s ease;
+        }
+
+        .time-slider-thumb {
+            position: absolute;
+            top: -5px;
+            right: -8px;
+            width: 16px;
+            height: 16px;
+            background: var(--color-accent);
+            border-radius: 50%;
+            cursor: grab;
+            transition: transform 0.2s ease;
+        }
+
+        .time-slider-thumb:hover {
+            transform: scale(1.2);
+        }
+
+        .time-info {
+            font-size: 11px;
+            color: var(--text-secondary);
+            min-width: 120px;
+            text-align: right;
+        }
+
+        .speed-control {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+
+        .speed-select {
+            width: 60px;
+            padding: 4px;
+            font-size: 11px;
+        }
+
+        .realtime-indicator {
+            position: absolute;
+            top: 15px;
+            left: 15px;
+            background: rgba(39, 174, 96, 0.9);
+            color: white;
+            padding: 6px 10px;
+            border-radius: 16px;
+            font-size: 11px;
+            font-weight: 600;
+            z-index: 1000;
+            display: none;
+        }
+
+        .realtime-indicator.active {
+            display: block;
+            animation: pulse 2s infinite;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top-color: white;
+            animation: spin 1s ease-in-out infinite;
+            margin-right: 4px;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        @keyframes pulse {
+            0% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.7;
+            }
+
+            100% {
+                opacity: 1;
+            }
+        }
+
+        .popup-content {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-size: 12px;
+            line-height: 1.4;
+            max-width: 250px;
+        }
+
+        .popup-content strong {
+            color: #2c3e50;
+        }
+
+        .popup-content .vessel-name {
+            font-size: 14px;
+            font-weight: bold;
+            color: #3498db;
+            margin-bottom: 6px;
+            display: block;
+        }
+
+        .optimization-info {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            background: var(--bg-secondary-solid);
+            color: var(--text-secondary);
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 10px;
+            z-index: 1000;
+            display: none;
+        }
+
+        .optimization-info.show {
+            display: block;
+        }
+
+        .view-controls {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .view-control-btn {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            background: var(--input-bg);
+            border: 1px solid var(--border-color-alpha);
+            border-radius: 6px;
+            color: var(--text-secondary);
+            text-decoration: none;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.3s ease;
+            width: 100%;
+            text-align: left;
+        }
+
+        .view-control-btn:hover {
+            background: var(--color-accent-alpha);
+            border-color: var(--color-accent);
+        }
+
+        .view-control-btn.active {
+            background: var(--color-accent);
+            border-color: var(--color-accent);
+            color: white;
+        }
+
+        .base-station-marker {
+            font-size: 18px;
+            text-shadow: 0 0 3px #000;
+        }
+
+        .leaflet-control-container {
+            z-index: 999;
+        }
+
+        .leaflet-control-container {
+            z-index: 999 !important;
+        }
+
+        @media (max-width: 1200px) {
+            .sidebar.open.left {
+                width: 280px;
+            }
+
+            .sidebar.open.left~.sidebar-toggle.left {
+                left: 280px;
+            }
+
+            .sidebar.open.right {
+                width: 280px;
+            }
+
+            .sidebar.open.right~.sidebar-toggle.right {
+                right: 280px;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .stats-bar {
+                gap: 10px;
+            }
+
+            .stat-item {
+                min-width: 40px;
+            }
+
+            .stat-value {
+                font-size: 12px;
+            }
+
+            .sidebar.open.left {
+                width: 260px;
+            }
+
+            .sidebar.open.right {
+                width: 260px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="top-bar">
+            <div class="app-title">🛰️ AIS Decoder and Map 0.9</div>
+
+            <div class="stats-bar">
+                <button class="btn-danger" id="clear-all-data">🗑️ Clear All Data</button>
+                <button class="theme-toggle-btn" id="theme-toggle" title="Toggle Day/Night Mode">
+                    <span>☀️</span>
+                </button>
+                <div id="tcp-status" class="connection-status disconnected">
+                    <div class="status-indicator"></div>
+                    <span>Disconnected</span>
+                </div>
+                <div class="stat-item"><span class="stat-value" id="total-messages">0</span><span
+                        class="stat-label">Messages</span></div>
+                <div class="stat-item"><span class="stat-value" id="valid-positions">0</span><span
+                        class="stat-label">Positions</span></div>
+                <div class="stat-item"><span class="stat-value" id="unique-vessels">0</span><span
+                        class="stat-label">Vessels</span></div>
+                <div class="stat-item"><span class="stat-value" id="messages-per-sec">0</span><span
+                        class="stat-label">Msg/s</span></div>
+                <div class="stat-item"><span class="stat-value" id="rendered-vessels">0</span><span
+                        class="stat-label">Rendered</span></div>
+                <div class="performance-indicator" id="performance-indicator"><span>⚡</span><span
+                        id="performance-text">Good</span></div>
+            </div>
+        </div>
+
+        <div class="main-content">
+            <div class="sidebar left" id="input-sidebar">
+                <div class="input-tabs">
+                    <button class="input-tab active" data-tab="tcp">📡 TCP</button>
+                    <button class="input-tab" data-tab="file">📁 File</button>
+                    <button class="input-tab" data-tab="manual">✏️ Manual</button>
+                </div>
+
+                <div class="input-panel active" id="tcp-panel">
+                    <div class="form-section">
+                        <h4>TCP Stream Connection</h4>
+                        <div class="input-group"><label>IP Address</label><input type="text" id="tcp-ip"
+                                value="localhost" placeholder="192.168.1.100"></div>
+                        <div class="input-group"><label>Port</label><input type="number" id="tcp-port" value="2101"
+                                placeholder="2101"></div>
+                        <button id="tcp-connect" class="btn-success">Connect</button>
+                    </div>
+                </div>
+                <div class="input-panel" id="file-panel">
+                    <div class="form-section">
+                        <h4>File Input</h4>
+                        <div class="input-group"><label>Upload NMEA File</label><input type="file" id="file-input"
+                                accept=".txt,.nmea,.log"><button id="process-file" class="btn-primary">Process
+                                File</button></div>
+                    </div>
+                </div>
+                <div class="input-panel" id="manual-panel">
+                    <div class="form-section">
+                        <h4>Manual Input</h4>
+                        <div class="input-group"><label>Paste NMEA Sentences</label><textarea id="nmea-textarea"
+                                placeholder="!AIVDM,1,1,,A,13HOI:0P0U0SG3o=..."></textarea><button id="process-text"
+                                class="btn-primary">Process Text</button></div>
+                    </div>
+                </div>
+
+            </div>
+            <button class="sidebar-toggle left" id="input-sidebar-toggle">Sources</button>
+
+            <div class="sidebar left" id="filters-sidebar">
+
+                <div class="form-section">
+                    <h4>Data Filters</h4>
+                    <div class="input-group"><label>Filter by MMSI</label><input type="text" id="mmsi-filter"
+                            placeholder="Enter MMSI number"></div>
+                    <div class="input-group"><label>Time Range</label><input type="datetime-local"
+                            id="start-time"><input type="datetime-local" id="end-time" style="margin-top: 5px;"></div>
+                    <button id="apply-filters" class="btn-warning">Apply</button><button id="clear-filters"
+                        class="btn-danger">Clear</button>
+                </div>
+
+            </div>
+            <button class="sidebar-toggle left" id="filters-sidebar-toggle">Filters</button>
+
+            <div class="sidebar left" id="settings-sidebar">
+
+                <div class="form-section">
+                    <details open>
+                        <summary>General Settings</summary>
+                        <div class="input-group"><label><input type="checkbox" id="realtime-updates" checked> Real-time
+                                Updates</label></div>
+                        <div class="input-group"><label>Update Rate (fps)</label><select id="update-rate">
+                                <option value="1">1 fps (Best Performance)</option>
+                                <option value="2" selected>2 fps (Recommended)</option>
+                                <option value="5">5 fps (High)</option>
+                                <option value="10">10 fps (Real-time)</option>
+                            </select></div>
+                        <div class="input-group"><label>Max Vessels to Render</label><select id="max-vessels">
+                                <option value="100">100 (Fast)</option>
+                                <option value="250" selected>250 (Balanced)</option>
+                                <option value="500">500 (High)</option>
+                                <option value="1000">1000 (All)</option>
+                            </select></div>
+                        <div class="input-group"><label>Track History Limit</label><select id="track-limit">
+                                <option value="50">50 positions</option>
+                                <option value="100" selected>100 positions</option>
+                                <option value="200">200 positions</option>
+                                <option value="500">500 positions</option>
+                            </select></div>
+                        <div class="input-group"><label><input type="checkbox" id="batch-processing" checked> Batch
+                                Processing (Faster)</label></div>
+                    </details>
+                </div>
+                <div class="form-section">
+                    <details open>
+                        <summary>Map Settings</summary>
+                        <div class="input-group">
+                            <label>Map Style</label>
+                            <select id="map-style-select">
+                                <option value="carto-dark">CartoDB Dark</option>
+                                <option value="carto-light">CartoDB Light</option>
+                                <option value="osm">OpenStreetMap</option>
+                                <option value="satellite">Satellite</option>
+                            </select>
+                        </div>
+                    </details>
+                </div>
+                <div class="form-section">
+                    <details open>
+                        <summary>Views</summary>
+                        <div class="view-controls">
+                            <button class="view-control-btn"
+                                title="Center the map on the selected vessel or active vessels" id="center-map">🎯
+                                Center Map</button>
+                            <button class="view-control-btn active" title="Display the track of the vessel on the map"
+                                id="toggle-tracks">📊 Show Tracks</button>
+                            <button class="view-control-btn" title="Show vessel names as labels on the map"
+                                id="toggle-names">🏷️ Show Names</button>
+                            <button class="view-control-btn" title="Display statistical data about vessels"
+                                id="toggle-optimization-info">📈 Show Stats</button>
+                            <button class="view-control-btn active" title="Show AIS base stations on the map"
+                                id="toggle-base-stations">📡 Show Base Stations</button>
+                        </div>
+                    </details>
+                </div>
+
+            </div>
+            <button class="sidebar-toggle left" id="settings-sidebar-toggle">Settings</button>
+
+            <div class="map-container">
+                <div id="map"></div>
+                <div class="realtime-indicator" id="realtime-indicator"><span class="loading"></span> LIVE</div>
+                <div class="optimization-info" id="optimization-info"></div>
+            </div>
+
+            <div class="sidebar right" id="vessel-sidebar">
+                <div class="form-section">
+                    <details open>
+                        <summary>Vessel Types></summary>
+                        <div class="filter-grid" id="vessel-type-filters"></div>
+                    </details>
+                </div>
+                <div class="form-section">
+                    <details open>
+                        <summary>Active Vessels<span class="vessel-count-badge" id="vessel-count">0</span></summary>
+                        <div class="input-group vessel-search"><input type="text" id="vessel-search"
+                                placeholder="Search vessels..."></div>
+                        <div class="vessel-sort-controls">
+                            <button class="sort-btn active" data-sort="name">Name</button>
+                            <button class="sort-btn" data-sort="mmsi">MMSI</button>
+                            <button class="sort-btn" data-sort="time">Time</button>
+                        </div>
+                        <div class="vessel-list" id="vessel-list"></div>
+                    </details>
+                    <div id="vessel-details-panel"></div>
+                </div>
+            </div>
+            <button class="sidebar-toggle right" id="vessel-sidebar-toggle">Vessels</button>
+        </div>
+
+        <div class="time-slider-container" id="time-slider-container">
+            <div class="time-controls">
+                <div class="playback-controls"><button class="playback-btn" id="play-btn">▶️</button><button
+                        class="playback-btn" id="pause-btn">⏸️</button><button class="playback-btn"
+                        id="stop-btn">⏹️</button><button class="playback-btn" id="reset-btn">⏮️</button></div>
+                <div class="time-slider" id="time-slider">
+                    <div class="time-slider-track" id="time-slider-track"></div>
+                    <div class="time-slider-thumb" id="time-slider-thumb"></div>
+                </div>
+                <div class="speed-control">Speed:<select class="speed-select" id="playback-speed">
+                        <option value="0.5">0.5x</option>
+                        <option value="1" selected>1x</option>
+                        <option value="2">2x</option>
+                        <option value="5">5x</option>
+                        <option value="10">10x</option>
+                        <option value="30">30x</option>
+                    </select></div>
+                <div class="time-info" id="time-info">
+                    <div>00:00:00 / 00:00:00</div>
+                    <div id="current-time">No data</div>
+                </div>
+            </div>
+        </div>
+        <button class="time-slider-toggle" id="time-slider-toggle">📅 Historical Playback</button>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <script>
+
+        class OptimizedNMEAAISDecoder {
+            constructor() {
+                this.map = null;
+                this.mapLayers = {};
+                this.activeMapLayer = null;
+                this.vesselData = new Map();
+                this.vesselMarkers = new Map();
+
+                this.vesselTracks = new Map();
+                this.baseStationMarkers = new Map();
+                this.lastBaseStationTimestamp = null;
+                this.tcpSocket = null;
+                this.isConnected = false;
+                this.showBaseStations = false;
+                this.showTracks = true;
+                this.showNames = false;
+                this.maxVesselsToRender = 250;
+                this.trackHistoryLimit = 100;
+                this.updateRate = 2;
+                this.batchProcessing = true;
+                this.performanceMetrics = { lastFrameTime: performance.now(), frameCount: 0, avgFrameTime: 0, renderedVessels: 0, totalVessels: 0 };
+                this.pendingUpdates = new Set();
+
+                this.lastUpdateTime = 0;
+                this.viewportBounds = null;
+                this.stats = { totalMessages: 0, validPositions: 0, uniqueVessels: 0, messagesPerSec: 0, lastSecondCount: 0, lastSecondTime: Date.now() };
+                this.filters = { mmsi: null, startTime: null, endTime: null };
+                this.vesselTypeFilters = new Set(['all']);
+                this.realtimeEnabled = true;
+                this.vesselSearch = '';
+                this.vesselSortBy = 'name';
+                this.historicalData = [];
+                this.playbackState = { isPlaying: false, isPaused: false, currentTime: 0, startTime: null, endTime: null, speed: 1, interval: null };
+                this.spatialIndex = new Map();
+                this.vesselTypeCounts = {};
+                this.initMap();
+                this.bindEvents();
+                this.updateVesselTypeCountsAndDisplay();
+                this.startOptimizedUpdateLoop();
+                this.startStatsTimer();
+                this.startPerformanceMonitoring();
+            }
+
+            initMap() {
+                this.map = L.map('map').setView([40.7128, -74.0060], 6);
+
+                this.mapLayers = {
+                    'carto-dark': L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { attribution: '© OpenStreetMap © CartoDB', maxZoom: 20 }),
+                    'carto-light': L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', { attribution: '© OpenStreetMap © CartoDB', maxZoom: 20 }),
+                    'osm': L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap', maxZoom: 19 }),
+                    'satellite': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { attribution: 'Tiles © Esri', maxZoom: 20 })
+                };
+
+                this.activeMapLayer = this.mapLayers['carto-dark'];
+                this.activeMapLayer.addTo(this.map);
+
+                this.map.on('moveend zoomend', () => { this.updateViewportBounds(); this.scheduleUpdate(); });
+                this.updateViewportBounds();
+            }
+
+
+
+            switchMapStyle(style) {
+                if (this.activeMapLayer) {
+                    this.map.removeLayer(this.activeMapLayer);
+                }
+                this.activeMapLayer = this.mapLayers[style];
+                this.activeMapLayer.addTo(this.map);
+
+                const mapElement = document.getElementById('map');
+                if (style === 'carto-dark') {
+                    mapElement.style.filter = 'var(--map-filter)';
+                } else {
+                    mapElement.style.filter = 'none';
+                }
+            }
+
+            toggleTheme() {
+                const body = document.body;
+                const toggleButton = document.getElementById('theme-toggle');
+                const mapSelect = document.getElementById('map-style-select');
+                body.classList.toggle('light-mode');
+
+                if (body.classList.contains('light-mode')) {
+                    if (mapSelect.value === 'carto-dark') {
+                        mapSelect.value = 'carto-light';
+                        this.switchMapStyle('carto-light');
+                    }
+                    toggleButton.innerHTML = '<span>🌙</span>';
+                } else {
+                    if (mapSelect.value === 'carto-light') {
+                        mapSelect.value = 'carto-dark';
+                        this.switchMapStyle('carto-dark');
+                    }
+                    toggleButton.innerHTML = '<span>☀️</span>';
+                }
+            }
+
+            updateViewportBounds() {
+                this.viewportBounds = this.map.getBounds();
+                const latBuffer = (this.viewportBounds.getNorth() - this.viewportBounds.getSouth()) * 0.1;
+                const lngBuffer = (this.viewportBounds.getEast() - this.viewportBounds.getWest()) * 0.1;
+                this.viewportBounds = L.latLngBounds([this.viewportBounds.getSouth() - latBuffer, this.viewportBounds.getWest() - lngBuffer], [this.viewportBounds.getNorth() + latBuffer, this.viewportBounds.getEast() + lngBuffer]);
+            }
+
+            startOptimizedUpdateLoop() {
+                const targetInterval = 1000 / this.updateRate;
+                const updateLoop = () => {
+                    const now = performance.now();
+                    if (now - this.lastUpdateTime >= targetInterval) {
+                        if (this.pendingUpdates.size > 0) {
+                            this.processPendingUpdates();
+                            this.lastUpdateTime = now;
+                        }
+                    }
+                    requestAnimationFrame(updateLoop);
+                };
+                requestAnimationFrame(updateLoop);
+            }
+
+            scheduleUpdate(mmsi = null) {
+                if (mmsi) { this.pendingUpdates.add(mmsi); }
+                else { this.pendingUpdates.add('__FULL_UPDATE__'); }
+            }
+
+            processPendingUpdates() {
+                const startTime = performance.now();
+                if (this.pendingUpdates.has('__FULL_UPDATE__')) {
+                    this.performFullUpdate();
+                    this.pendingUpdates.clear();
+                } else {
+                    const updates = Array.from(this.pendingUpdates);
+                    this.pendingUpdates.clear();
+                    for (const mmsi of updates) {
+                        const vessel = this.vesselData.get(mmsi);
+                        if (vessel && this.shouldRenderVessel(vessel)) {
+                            this.updateVesselDisplay(vessel);
+                        }
+                    }
+                }
+                this.updatePerformanceMetrics(performance.now() - startTime);
+            }
+
+            performFullUpdate() {
+                this.clearMapData();
+                const vesselsToRender = this.getVesselsToRender();
+                vesselsToRender.forEach(vessel => { this.updateVesselDisplay(vessel); });
+                this.updateVesselList();
+                this.performanceMetrics.renderedVessels = vesselsToRender.length;
+                this.performanceMetrics.totalVessels = this.vesselData.size;
+                document.getElementById('rendered-vessels').textContent = this.performanceMetrics.renderedVessels;
+            }
+
+            getVesselsToRender() {
+                return Array.from(this.vesselData.entries())
+                    .filter(([mmsi, vessel]) => this.shouldRenderVessel(vessel))
+                    .sort(([, a], [, b]) => b.lastUpdate - a.lastUpdate)
+                    .slice(0, this.maxVesselsToRender)
+                    .map(([mmsi, vessel]) => vessel);
+            }
+
+            shouldRenderVessel(vessel) {
+                if (!vessel.positions.length || !this.passesFilters(vessel) || !this.passesVesselTypeFilter(vessel)) return false;
+                const latestPosition = vessel.positions[vessel.positions.length - 1];
+                return this.viewportBounds.contains(L.latLng(latestPosition.latitude, latestPosition.longitude));
+            }
+
+            updatePerformanceMetrics(processingTime) {
+                this.performanceMetrics.frameCount++;
+                this.performanceMetrics.avgFrameTime = (this.performanceMetrics.avgFrameTime * (this.performanceMetrics.frameCount - 1) + processingTime) / this.performanceMetrics.frameCount;
+                const perfIndicator = document.getElementById('performance-indicator');
+                const perfText = document.getElementById('performance-text');
+                if (processingTime < 16) { perfIndicator.className = 'performance-indicator perf-good'; perfText.textContent = 'Good'; }
+                else if (processingTime < 33) { perfIndicator.className = 'performance-indicator perf-warning'; perfText.textContent = 'OK'; }
+                else { perfIndicator.className = 'performance-indicator perf-bad'; perfText.textContent = 'Slow'; }
+            }
+
+            startPerformanceMonitoring() {
+                setInterval(() => {
+                    const info = document.getElementById('optimization-info');
+                    if (info.classList.contains('show')) {
+                        info.innerHTML = `<div>Viewport Culling: ${this.performanceMetrics.renderedVessels}/${this.performanceMetrics.totalVessels} vessels</div><div>Update Rate: ${this.updateRate}fps</div><div>Avg Frame Time: ${this.performanceMetrics.avgFrameTime.toFixed(1)}ms</div><div>Memory: ${(performance.memory ? (performance.memory.usedJSHeapSize / 1024 / 1024).toFixed(1) + 'MB' : 'N/A')}</div>`;
+                    }
+                }, 1000);
+            }
+
+            bindEvents() {
+
+
+                document.getElementById('clear-all-data').addEventListener('click', () => this.clearAllData());
+                document.getElementById('theme-toggle').addEventListener('click', () => this.toggleTheme());
+                document.getElementById('input-sidebar-toggle').addEventListener('click', () => document.getElementById('input-sidebar').classList.toggle('open'));
+                document.getElementById('filters-sidebar-toggle').addEventListener('click', () => document.getElementById('filters-sidebar').classList.toggle('open'));
+                document.getElementById('settings-sidebar-toggle').addEventListener('click', () => document.getElementById('settings-sidebar').classList.toggle('open'));
+                document.getElementById('vessel-sidebar-toggle').addEventListener('click', () => document.getElementById('vessel-sidebar').classList.toggle('open'));
+                document.getElementById('time-slider-toggle').addEventListener('click', () => document.getElementById('time-slider-container').classList.toggle('open'));
+
+                document.getElementById('max-vessels').addEventListener('change', (e) => { this.maxVesselsToRender = parseInt(e.target.value); this.scheduleUpdate(); });
+                document.getElementById('track-limit').addEventListener('change', (e) => { this.trackHistoryLimit = parseInt(e.target.value); this.limitTrackHistory(); });
+                document.getElementById('update-rate').addEventListener('change', (e) => { this.updateRate = parseInt(e.target.value); });
+                document.getElementById('batch-processing').addEventListener('change', (e) => { this.batchProcessing = e.target.checked; });
+                document.querySelectorAll('.input-tab').forEach(tab => { tab.addEventListener('click', () => this.switchInputTab(tab)); });
+
+                document.querySelectorAll('#vessel-type-filters input[type="checkbox"]').forEach(checkbox => { checkbox.addEventListener('change', () => this.updateVesselTypeFilters()); });
+                document.getElementById('play-btn').addEventListener('click', () => this.startPlayback());
+                document.getElementById('pause-btn').addEventListener('click', () => this.pausePlayback());
+                document.getElementById('stop-btn').addEventListener('click', () => this.stopPlayback());
+                document.getElementById('reset-btn').addEventListener('click', () => this.resetPlayback());
+                document.getElementById('playback-speed').addEventListener('change', (e) => { this.playbackState.speed = parseFloat(e.target.value); });
+                this.initTimeSlider();
+
+                // View control events - moved to settings sidebar
+                document.getElementById('center-map').addEventListener('click', () => this.fitMapToData());
+                document.getElementById('toggle-tracks').addEventListener('click', () => this.toggleTracks());
+                document.getElementById('toggle-names').addEventListener('click', () => this.toggleNames());
+                document.getElementById('toggle-optimization-info').addEventListener('click', () => { document.getElementById('optimization-info').classList.toggle('show'); });
+                document.getElementById('map-style-select').addEventListener('change', (e) => this.switchMapStyle(e.target.value));
+                document.getElementById('toggle-base-stations').addEventListener('click', () => this.toggleBaseStations());
+
+                // Vessel sorting controls
+                document.querySelectorAll('.sort-btn').forEach(btn => {
+                    btn.addEventListener('click', () => this.setSortBy(btn.dataset.sort));
+                });
+
+                document.getElementById('tcp-connect').addEventListener('click', () => this.toggleTCPConnection());
+                document.getElementById('process-file').addEventListener('click', () => this.processFile());
+                document.getElementById('process-text').addEventListener('click', () => this.processText());
+                document.getElementById('apply-filters').addEventListener('click', () => this.applyFilters());
+                document.getElementById('clear-filters').addEventListener('click', () => this.clearFilters());
+                document.getElementById('realtime-updates').addEventListener('change', (e) => { this.realtimeEnabled = e.target.checked; });
+                let searchTimeout;
+                document.getElementById('vessel-search').addEventListener('input', (e) => { clearTimeout(searchTimeout); searchTimeout = setTimeout(() => { this.vesselSearch = e.target.value.toLowerCase(); this.updateVesselList(); }, 300); });
+                document.getElementById('file-input').addEventListener('change', (e) => { if (e.target.files.length > 0) { document.getElementById('process-file').textContent = `Process ${e.target.files[0].name}`; } });
+            }
+
+            setSortBy(sortBy) {
+                this.vesselSortBy = sortBy;
+                document.querySelectorAll('.sort-btn').forEach(btn => btn.classList.remove('active'));
+                document.querySelector(`[data-sort="${sortBy}"]`).classList.add('active');
+                this.updateVesselList();
+            }
+
+            sortVessels(vessels) {
+                return vessels.sort((a, b) => {
+                    switch (this.vesselSortBy) {
+                        case 'mmsi':
+                            return a.mmsi - b.mmsi;
+                        case 'time':
+                            return b.lastUpdate - a.lastUpdate;
+                        case 'name':
+                        default:
+                            const aName = (a.staticData.vesselName || `MMSI: ${a.mmsi}`).toLowerCase();
+                            const bName = (b.staticData.vesselName || `MMSI: ${b.mmsi}`).toLowerCase();
+                            return aName.localeCompare(bName);
+                    }
+                });
+            }
+
+
+            clearAllData() {
+                // Remove markers from map BEFORE clearing collections
+                this.vesselMarkers.forEach(marker => this.map.removeLayer(marker));
+                this.vesselTracks.forEach(track => this.map.removeLayer(track));
+                this.baseStationMarkers.forEach(marker => this.map.removeLayer(marker));
+
+                // Now clear the collections
+                this.vesselData.clear();
+                this.vesselMarkers.clear();
+                this.vesselTracks.clear();
+                this.baseStationMarkers.clear();
+
+                // Reset stats and UI
+                this.stats = {
+                    totalMessages: 0,
+                    validPositions: 0,
+                    uniqueVessels: 0,
+                    messagesPerSec: 0,
+                    lastSecondCount: 0,
+                    lastSecondTime: Date.now()
+                };
+
+                // Clear vessel details panel
+                const detailsPanel = document.getElementById('vessel-details-panel');
+                if (detailsPanel) {
+                    detailsPanel.innerHTML = '';
+                }
+
+                // Update all UI components
+                this.updateStats();
+                this.updateVesselList();
+                this.updateVesselTypeCountsAndDisplay(); // This was missing!
+            }
+
+
+            updateVesselList() {
+                const list = document.getElementById('vessel-list');
+                const badge = document.getElementById('vessel-count');
+                let vessels = Array.from(this.vesselData.values())
+                    .filter(v => this.passesFilters(v) && this.passesSearch(v) && this.passesVesselTypeFilter(v));
+
+                vessels = this.sortVessels(vessels).slice(0, 1000);
+
+                badge.textContent = vessels.length;
+                const frag = document.createDocumentFragment();
+
+                vessels.forEach(v => {
+                    //Handy output - but a lot of it.. console.log(v);
+                    const div = document.createElement('div');
+                    div.className = 'vessel-item';
+                    div.setAttribute('data-mmsi', v.mmsi);
+                    div.innerHTML = `<div style="display: flex; align-items: center; gap: 6px;"><div style="width: 8px; height: 8px; background: ${this.getShipTypeColor(v.staticData.shipType)}; border-radius: 50%;"></div><div class="vessel-name">${v.staticData.vesselName || `MMSI: ${v.mmsi}`}</div></div><div class="vessel-mmsi">MMSI: ${v.mmsi}</div>`;
+                    div.addEventListener('click', () => this.selectVessel(v.mmsi));
+
+                    frag.appendChild(div);
+                });
+                list.innerHTML = '';
+                list.appendChild(frag);
+            }
+
+            updateVesselTypeCountsAndDisplay() {
+                const counts = { cargo: 0, tanker: 0, passenger: 0, fishing: 0, pleasure: 0, military: 0, sailing: 0, unknown: 0 };
+                for (const vessel of this.vesselData.values()) {
+                    const category = this.getVesselCategory(vessel.staticData.shipType);
+                    if (counts.hasOwnProperty(category)) {
+                        counts[category]++;
+                    }
+                }
+                counts.all = this.vesselData.size;
+                this.vesselTypeCounts = counts;
+
+                const filterContainer = document.getElementById('vessel-type-filters');
+                const types = [
+                    { type: 'all', color: '#95a5a6', label: 'All' },
+                    { type: 'cargo', color: '#34495e', label: 'Cargo' },
+                    { type: 'tanker', color: '#c0392b', label: 'Tanker' },
+                    { type: 'passenger', color: '#e67e22', label: 'Passenger' },
+                    { type: 'fishing', color: '#e74c3c', label: 'Fishing' },
+                    { type: 'pleasure', color: '#2ecc71', label: 'Pleasure' },
+                    { type: 'military', color: '#8e44ad', label: 'Military' },
+                    { type: 'sailing', color: '#3498db', label: 'Sailing' },
+                    { type: 'special', color: '#3498db', label: 'Special' },
+                    { type: 'unknown', color: '#95a5a6', label: 'Unknown' },
+                    { type: 'other', color: '#95a5a6', label: 'Other' }
+                ];
+
+                let html = '';
+                types.forEach(({ type, color, label }) => {
+                    const count = this.vesselTypeCounts[type] || 0;
+                    if (count > 0 || type === 'all') {
+                        const isChecked = this.vesselTypeFilters.has(type);
+                        html += `<label class="filter-checkbox"><input type="checkbox" ${isChecked ? 'checked' : ''} data-type="${type}"><span class="filter-color" style="background: ${color};"></span>${label} (${count})</label>`;
+                    }
+                });
+                filterContainer.innerHTML = html;
+
+                // Re-bind events
+                filterContainer.querySelectorAll('input[type="checkbox"]').forEach(checkbox => {
+                    checkbox.addEventListener('change', () => this.updateVesselTypeFilters());
+                });
+            }
+
+            limitTrackHistory() {
+                this.vesselData.forEach(vessel => {
+                    if (vessel.positions.length > this.trackHistoryLimit) {
+                        vessel.positions = vessel.positions.slice(-this.trackHistoryLimit);
+                    }
+                }); this.scheduleUpdate();
+            }
+
+            processSingleNMEA(sentence) {
+                if (!sentence || (!sentence.startsWith('!AIVDM') && !sentence.startsWith('$AIVDM'))) { return; }
+                try {
+                    this.stats.totalMessages++; const parsed = this.parseAISMessage(sentence);
+                    if (parsed) {
+                        this.addVesselData(parsed);
+                        if (parsed.latitude) {
+                            this.stats.validPositions++;
+                        }
+                        if (this.realtimeEnabled && this.isConnected) {
+                            this.scheduleUpdate(parsed.mmsi);
+                        }
+                    }
+                } catch (error) {
+                    console.error('Error parsing NMEA:', error);
+                }
+            }
+
+            async processFile() {
+                const fileInput = document.getElementById('file-input'); const file = fileInput.files[0];
+                if (!file) {
+                    alert('Please select a file first'); return;
+                } const startTime = performance.now(); const text = await file.text();
+                if (this.batchProcessing) {
+                    await this.processBatchNMEAData(text);
+                } else {
+                    this.processNMEAData(text, 'file');
+                }
+                console.log(`File processed in ${(performance.now() - startTime) / 1000}s`);
+                this.prepareHistoricalPlayback();
+            }
+
+            async processBatchNMEAData(nmeaText) {
+                const sentences = nmeaText.split('\n').filter(line => line.trim());
+                const batchSize = 1000;
+                for (let i = 0; i < sentences.length; i += batchSize) {
+                    sentences.slice(i, i + batchSize).forEach(s => this.processSingleNMEA(s.trim()));
+                    if (i % (batchSize * 5) === 0) {
+                        await new Promise(r => setTimeout(r, 10));
+                        document.getElementById('process-file').textContent = `Processing... ${((i / sentences.length) * 100).toFixed(0)}%`;
+                    }
+                } document.getElementById('process-file').textContent = 'Process File'; this.scheduleUpdate();
+            }
+
+            switchInputTab(activeTab) {
+                document.querySelectorAll('.input-tab').forEach(tab => tab.classList.remove('active'));
+                document.querySelectorAll('.input-panel').forEach(panel => panel.classList.remove('active'));
+                activeTab.classList.add('active');
+                document.getElementById(`${activeTab.dataset.tab}-panel`).classList.add('active');
+            }
+
+            updateVesselTypeFilters() {
+                const checkboxes = document.querySelectorAll('#vessel-type-filters input[type="checkbox"]');
+                this.vesselTypeFilters.clear();
+                checkboxes.forEach(c => {
+                    if (c.checked) this.vesselTypeFilters.add(c.dataset.type);
+                });
+                if (document.querySelector('input[data-type="all"]').checked || this.vesselTypeFilters.size === 0) {
+                    checkboxes.forEach(cb => {
+                        cb.checked = true;
+                        this.vesselTypeFilters.add(cb.dataset.type);
+                    });
+                }
+                this.scheduleUpdate();
+            }
+
+            parseAISMessage(sentence) {
+                const parts = sentence.split(',');
+                if (parts.length < 6) return null;
+                const payload = parts[5];
+                const fillBits = parseInt(parts[6].split('*')[0]);
+                try {
+                    const decoded = this.decodeAISPayload(payload, fillBits);
+                    if (decoded) {
+                        // Handle timestamping from Type 4 messages
+                        if (decoded.messageType === 4 && decoded.year > 0 && decoded.month > 0 && decoded.day > 0) {
+                            this.lastBaseStationTimestamp = new Date(Date.UTC(decoded.year, decoded.month - 1, decoded.day, decoded.hour, decoded.minute, decoded.second));
+                        }
+                        decoded.timestamp = this.lastBaseStationTimestamp || new Date(); // Use base station time if available
+                        decoded.rawSentence = sentence;
+                    }
+                    return decoded;
+                } catch (e) {
+                    return null;
+                }
+            }
+
+            decodeAISPayload(payload, fillBits) {
+                let binary = '';
+                for (let i = 0; i < payload.length; i++) {
+                    let char = payload.charCodeAt(i);
+                    if (char >= 48 && char <= 119) {
+                        char -= 48;
+                        if (char > 40) char -= 8;
+                        binary += char.toString(2).padStart(6, '0');
+                    }
+                }
+                if (fillBits > 0) { binary = binary.slice(0, -fillBits); }
+                if (binary.length < 38) return null;
+                const messageType = parseInt(binary.substr(0, 6), 2);
+                const mmsi = parseInt(binary.substr(8, 30), 2);
+
+                if (messageType >= 1 && messageType <= 3) { // Position Report Class A
+                    if (binary.length < 168) return null;
+                    const longitude = this.parseTwosComplement(binary.substr(61, 28)) / 600000;
+                    const latitude = this.parseTwosComplement(binary.substr(89, 27)) / 600000;
+                    if (longitude < -180 || longitude > 180 || latitude < -90 || latitude > 90) return null;
+                    return { messageType, mmsi, latitude, longitude, sog: parseInt(binary.substr(50, 10), 2) / 10, cog: parseInt(binary.substr(116, 12), 2) / 10, heading: parseInt(binary.substr(128, 9), 2), navStatus: parseInt(binary.substr(38, 4), 2) };
+                } else if (messageType === 4) { // Base Station Report
+                    if (binary.length < 168) return null;
+                    const year = parseInt(binary.substr(38, 14), 2);
+                    const month = parseInt(binary.substr(52, 4), 2);
+                    const day = parseInt(binary.substr(56, 5), 2);
+                    const hour = parseInt(binary.substr(61, 5), 2);
+                    const minute = parseInt(binary.substr(66, 6), 2);
+                    const second = parseInt(binary.substr(72, 6), 2);
+                    const longitude = this.parseTwosComplement(binary.substr(79, 28)) / 600000;
+                    const latitude = this.parseTwosComplement(binary.substr(107, 27)) / 600000;
+                    return { messageType, mmsi, year, month, day, hour, minute, second, longitude, latitude };
+                } else if (messageType === 5) { // Static and Voyage Related Data
+                    if (binary.length < 424) return null;
+                    return {
+                        messageType,
+                        mmsi,
+                        imo: parseInt(binary.substr(40, 30), 2) || 0,
+                        callSign: this.decodeAISText(binary.substr(70, 42)).trim(),
+                        vesselName: this.decodeAISText(binary.substr(112, 120)).trim(),
+                        shipType: parseInt(binary.substr(232, 8), 2),
+                        draught: parseInt(binary.substr(294, 8), 2) / 10,
+                        destination: this.decodeAISText(binary.substr(302, 120)).trim()
+                    };
+                }
+                return null;
+            }
+
+            parseTwosComplement(binary) { const num = parseInt(binary, 2); if (num >= Math.pow(2, binary.length - 1)) { return num - Math.pow(2, binary.length); } return num; }
+
+            decodeAISText(binary) { let text = ''; for (let i = 0; i < binary.length; i += 6) { const char = parseInt(binary.substr(i, 6), 2); if (char === 0) break; text += String.fromCharCode(char < 32 ? char + 64 : char); } return text.replace(/@+$/, ''); }
+
+            addVesselData(data) {
+                if (data.messageType === 4) { // Handle Base Station Report
+                    this.updateBaseStationDisplay(data);
+                    return; // Do not add to vessel data/list
+                }
+
+                let isNewVessel = false;
+                if (!this.vesselData.has(data.mmsi)) {
+                    this.vesselData.set(data.mmsi, { mmsi: data.mmsi, positions: [], staticData: {}, lastUpdate: new Date() });
+                    isNewVessel = true;
+                }
+                const vessel = this.vesselData.get(data.mmsi);
+                vessel.lastUpdate = new Date();
+
+                if (data.messageType >= 1 && data.messageType <= 3) {
+                    vessel.positions.push(data);
+                    if (vessel.positions.length > this.trackHistoryLimit) {
+                        vessel.positions.shift();
+                    }
+                } else if (data.messageType === 5) {
+                    // Merge new static data with existing data, preventing overwrites with empty values
+                    Object.keys(data).forEach(key => {
+                        if (data[key]) {
+                            vessel.staticData[key] = data[key];
+                        }
+                    });
+                }
+                this.stats.uniqueVessels = this.vesselData.size;
+
+                if (isNewVessel || data.messageType === 5) {
+                    this.updateVesselTypeCountsAndDisplay();
+                    //this.updateVesselList();
+                }
+            }
+
+            updateVesselDisplay(vessel) {
+
+                if (this.selectedVessel === vessel.mmsi) return; // Skip updating if vessel is already selected
+                if (!vessel.positions.length) return;
+                const mmsi = vessel.mmsi; const latest = vessel.positions[vessel.positions.length - 1];
+                const icon = this.getVesselIcon(vessel.staticData.shipType, latest.cog, latest.heading);
+                if (this.vesselMarkers.has(mmsi)) {
+                    const marker = this.vesselMarkers.get(mmsi);
+                    marker.setLatLng([latest.latitude, latest.longitude]);
+                    marker.setIcon(icon);
+                } else {
+                    const marker = L.marker([latest.latitude, latest.longitude], { icon });
+                    marker.bindPopup(() => this.createPopupContent(vessel));
+                    marker.addTo(this.map); this.vesselMarkers.set(mmsi, marker);
+                    if (this.showNames) {
+                        marker.bindTooltip(vessel.staticData.vesselName || `MMSI: ${mmsi}`, { permanent: true, direction: 'top', offset: [0, -20] });
+                    }
+                }
+                if (this.showTracks && vessel.positions.length >= 2) { this.updateVesselTrack(vessel); }
+            }
+
+            updateVesselTrack(vessel) { const trackPoints = vessel.positions.slice(-50).map(p => [p.latitude, p.longitude]); if (this.vesselTracks.has(vessel.mmsi)) { this.vesselTracks.get(vessel.mmsi).setLatLngs(trackPoints); } else { const track = L.polyline(trackPoints, { color: this.getTrackColor(vessel.mmsi), weight: 1.5, opacity: 0.6 }); if (this.showTracks) track.addTo(this.map); this.vesselTracks.set(vessel.mmsi, track); } }
+
+            getVesselIcon(shipType, cog, heading) { let rotation = (heading !== 511 && heading !== undefined) ? heading : cog; const color = this.getShipTypeColor(shipType); const iconSvg = `<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><g transform="rotate(${rotation} 8 8)"><path d="M8 1 L13 14 L8 12 L3 14 Z" fill="${color}" stroke="${document.body.classList.contains('light-mode') ? '#333' : '#fff'}" stroke-width="0.8"/><circle cx="8" cy="6" r="1" fill="${document.body.classList.contains('light-mode') ? '#333' : '#fff'}"/></g></svg>`; return L.icon({ iconUrl: 'data:image/svg+xml;base64,' + btoa(iconSvg), iconSize: [16, 16], iconAnchor: [8, 8], popupAnchor: [0, -8] }); }
+
+
+
+            getVesselCategory(st) {
+
+                if (st == 30) return 'fishing';
+                if (st == 37) return 'pleasure';
+                if (st == 35) return 'military';
+                if (st == 36) return 'sailing';
+                if (st >= 50 && st <= 59) return 'special';
+                if (st >= 60 || st <= 69) return 'passenger';
+                if (st >= 70 && st <= 79) return 'cargo';
+                if (st >= 80 && st <= 89) return 'tanker';
+                if (st >= 90 && st <= 99) return 'other';
+
+                if (st) { console.log(`Unknown ship type: ${st}`); }
+                return 'unknown';
+            }
+
+            getShipTypeColor(shipType) {
+                const c = { cargo: '#34495e', tanker: '#c0392b', passenger: '#e67e22', fishing: '#e74c3c', pleasure: '#2ecc71', military: '#8e44ad', sailing: '#3498db', special: '#3498db', other: '#95a5a6', unknown: '#95a5a6' };
+                return c[this.getVesselCategory(shipType)] || '#95a5a6';
+            }
+
+            getTrackColor(mmsi) {
+                return ['#3498db', '#e74c3c', '#2ecc71', '#f39c12', '#9b59b6'][mmsi % 5];
+            }
+
+            passesVesselTypeFilter(vessel) {
+                if (this.vesselTypeFilters.has('all')) return true;
+                return this.vesselTypeFilters.has(this.getVesselCategory(vessel.staticData.shipType));
+            }
+
+            passesFilters(vessel) {
+                if (this.filters.mmsi && vessel.mmsi.toString() !== this.filters.mmsi) return false;
+                if (this.filters.startTime || this.filters.endTime) {
+                    if (!vessel.positions.some(p => (!this.filters.startTime || new Date(p.timestamp) >= this.filters.startTime) && (!this.filters.endTime || new Date(p.timestamp) <= this.filters.endTime))) return false;
+                }
+                return true;
+            }
+
+            passesSearch(vessel) {
+                if (!this.vesselSearch) return true;
+                return (vessel.staticData.vesselName || '').toLowerCase().includes(this.vesselSearch) || vessel.mmsi.toString().includes(this.vesselSearch);
+            }
+
+            createPopupContent(vessel) {
+                const latest = vessel.positions.length > 0 ? vessel.positions[vessel.positions.length - 1] : null;
+                const staticData = vessel.staticData || {};
+                let content = `<div class="popup-content"><span class="vessel-name">${staticData.vesselName || 'Unknown'}</span><strong>MMSI:</strong> ${vessel.mmsi}<br>`;
+
+                if (staticData.imo && staticData.imo !== 0) content += `<strong>IMO:</strong> ${staticData.imo}<br>`;
+                if (latest) {
+                    content += `<strong>Position:</strong> ${latest.latitude.toFixed(6)}, ${latest.longitude.toFixed(6)}<br>`;
+                    content += `<strong>Time:</strong> ${latest.timestamp.toLocaleString()}<br>`;
+                    if (latest.sog) content += `<strong>Speed:</strong> ${latest.sog} knots<br>`;
+                    if (latest.cog) content += `<strong>Course:</strong> ${latest.cog}°<br>`;
+                }
+                if (staticData.destination) content += `<strong>Destination:</strong> ${staticData.destination}<br>`;
+                if (staticData.draught > 0) content += `<strong>Draught:</strong> ${staticData.draught.toFixed(1)}m<br>`;
+
+                content += `</div>`;
+                return content;
+            }
+
+            updateBaseStationDisplay(station) {
+                const mmsi = station.mmsi;
+                // Using a simple DivIcon for the base station marker
+                const icon = L.divIcon({
+                    html: '📡',
+                    className: 'base-station-marker',
+                    iconSize: [24, 24],
+                    iconAnchor: [12, 12]
+                });
+
+                if (this.baseStationMarkers.has(mmsi)) {
+                    const marker = this.baseStationMarkers.get(mmsi);
+                    marker.setLatLng([station.latitude, station.longitude]);
+                    marker.getPopup().setContent(`<b>Base Station</b><br>MMSI: ${mmsi}<br>Last Report: ${station.timestamp.toLocaleString()}`);
+                } else {
+                    const marker = L.marker([station.latitude, station.longitude], { icon, zIndexOffset: -1000 });
+                    marker.bindPopup(`<b>Base Station</b><br>MMSI: ${mmsi}<br>Last Report: ${station.timestamp.toLocaleString()}`);
+                    this.baseStationMarkers.set(mmsi, marker);
+                    if (this.showBaseStations) {
+                        marker.addTo(this.map);
+                    }
+                }
+            }
+
+            clearMapData() {
+                this.vesselMarkers.forEach(m => this.map.removeLayer(m));
+                this.vesselTracks.forEach(t => this.map.removeLayer(t));
+                this.vesselMarkers.clear(); this.vesselTracks.clear();
+            }
+
+
+            // Set popup allows us to delay the vesselMarker lookup until the marker have been updated.
+            setPopup(mmsi) {
+                const marker = this.vesselMarkers.get(mmsi);
+                marker.openPopup();
+            }
+
+            selectVessel(mmsi) {
+                if (this.selectingVessel) return;
+                this.selectingVessel = true;
+                setTimeout(() => this.selectingVessel = false, 300);
+                const vessel = this.vesselData.get(mmsi);
+                // if (!vessel || !vessel.positions.length) return; 
+
+
+                // Set up the details for a selected vessel
+                const detailsPanel = document.getElementById('vessel-details-panel');
+                const staticData = vessel.staticData || {};
+                const latestPosition = vessel.positions[vessel.positions.length - 1];
+
+                // Helper to convert ship type number to a name (using your existing logic)
+                const shipTypeName = this.getVesselCategory(staticData.shipType).replace(/^\w/, c => c.toUpperCase());
+
+                // 3. Construct the HTML string using a template literal
+                const htmlContent = `
+                 <div class="vessel-details-content" style="padding: 10px; font-size: 12px;">
+                     <h4 style="margin-top:0; color: var(--color-accent);">${staticData.vesselName || 'Unknown Vessel'}</h4>
+                     <div class="detail-item"><strong>MMSI:</strong> ${vessel.mmsi}</div>
+                     <div class="detail-item"><strong>IMO:</strong> ${staticData.imo || 'N/A'}</div>
+                     <div class="detail-item"><strong>Call Sign:</strong> ${staticData.callSign || 'N/A'}</div>
+                     <div class="detail-item"><strong>Type:</strong> ${shipTypeName}</div>
+                     <hr>
+                     <h5>Voyage Data</h5>
+                     <div class="detail-item"><strong>Destination:</strong> ${staticData.destination || 'N/A'}</div>
+                     <div class="detail-item"><strong>Draught:</strong> ${staticData.draught ? staticData.draught + 'm' : 'N/A'}</div>
+                     <hr>
+                     <h5>Latest Position</h5>
+                     ${latestPosition ? `
+                     <div class="detail-item"><strong>Coords:</strong> ${latestPosition.latitude.toFixed(4) || 0}°, ${latestPosition.longitude.toFixed(4) || 0}°</div>
+                     <div class="detail-item"><strong>Speed:</strong> ${latestPosition.sog || 0} knots</div>
+                     <div class="detail-item"><strong>Course:</strong> ${latestPosition.cog || 0}°</div>
+                     <div class="detail-item"><strong>Last Update:</strong> ${new Date(latestPosition.timestamp).toLocaleTimeString()}</div>
+                     ` : '<div class="detail-item">No latest position data available.</div>'}
+                 </div>
+             `;
+
+                // Update the panel's inner HTML
+                if (detailsPanel) {
+                    detailsPanel.innerHTML = htmlContent;
+                }
+
+
+                const latest = vessel.positions[vessel.positions.length - 1];
+                // Check we have a position from a type 1,2,3 message, not just vessel from type 5
+                if (latest) {
+                    this.map.setView([latest.latitude, latest.longitude], 12);
+                    setTimeout(() => this.setPopup(mmsi), 500);
+                }
+            }
+
+
+
+
+
+
+
+            fitMapToData() {
+                if (this.vesselMarkers.size === 0) return;
+                this.map.fitBounds(new L.featureGroup([...this.vesselMarkers.values()]).getBounds().pad(0.05));
+            }
+
+            toggleTracks() {
+                this.showTracks = !this.showTracks;
+                document.getElementById('toggle-tracks').classList.toggle('active', this.showTracks);
+                this.vesselTracks.forEach(t => {
+                    if (this.showTracks) this.map.addLayer(t);
+                    else this.map.removeLayer(t);
+                });
+            }
+
+            toggleNames() {
+                this.showNames = !this.showNames;
+                document.getElementById('toggle-names').classList.toggle('active', this.showNames);
+                this.scheduleUpdate();
+            }
+
+            toggleBaseStations() {
+                this.showBaseStations = !this.showBaseStations;
+                document.getElementById('toggle-base-stations').classList.toggle('active', this.showBaseStations);
+                this.baseStationMarkers.forEach(marker => {
+                    if (this.showBaseStations) {
+                        this.map.addLayer(marker);
+                    } else {
+                        this.map.removeLayer(marker);
+                    }
+                });
+            }
+
+            async toggleTCPConnection() {
+                if (this.isConnected) this.disconnectTCP();
+                else await this.connectTCP();
+            }
+
+
+            async connectTCP() {
+                const ip = document.getElementById('tcp-ip').value;
+                const port = document.getElementById('tcp-port').value;
+                const connectBtn = document.getElementById('tcp-connect');
+                const status = document.getElementById('tcp-status');
+
+                if (!ip || !port) {
+                    alert('Please enter both IP address and port');
+                    return;
+                }
+
+                try {
+                    connectBtn.textContent = 'Connecting...';
+                    connectBtn.disabled = true;
+                    status.textContent = 'Connecting to WebSocket proxy...';
+                    status.className = 'status';
+
+                    await this.connectWebSocket(ip, port);
+
+                } catch (error) {
+                    status.textContent = `Error: ${error.message}`;
+                    status.className = 'status error';
+                    connectBtn.textContent = 'Connect';
+                    connectBtn.disabled = false;
+                }
+            }
+
+            async connectWebSocket(tcpIp, tcpPort) {
+                return new Promise((resolve, reject) => {
+                    // Connect to WebSocket proxy (adjust URL as needed)
+                    const wsUrl = `ws://localhost:8080`; // Change this to your proxy server URL
+
+                    this.tcpSocket = new WebSocket(wsUrl);
+
+                    this.tcpSocket.onopen = () => {
+                        console.log('Connected to WebSocket proxy');
+
+                        // Request connection to TCP source
+                        this.tcpSocket.send(JSON.stringify({
+                            type: 'connect',
+                            ip: tcpIp,
+                            port: parseInt(tcpPort)
+                        }));
+                    };
+
+                    this.tcpSocket.onmessage = (event) => {
+                        try {
+                            const data = JSON.parse(event.data);
+                            this.handleWebSocketMessage(data, resolve, reject);
+                        } catch (error) {
+                            console.error('Invalid WebSocket message:', error);
+                        }
+                    };
+
+                    this.tcpSocket.onerror = (error) => {
+                        console.error('WebSocket error:', error);
+                        reject(new Error('WebSocket connection failed'));
+                    };
+
+                    this.tcpSocket.onclose = () => {
+                        console.log('WebSocket connection closed');
+                        if (this.isConnected) {
+                            this.handleDisconnection();
+                        }
+                    };
+                });
+            }
+
+            handleWebSocketMessage(data, resolve = null, reject = null) {
+                const status = document.getElementById('tcp-status');
+                const connectBtn = document.getElementById('tcp-connect');
+
+                switch (data.type) {
+                    case 'welcome':
+                        console.log('WebSocket proxy welcome:', data.message);
+                        break;
+
+                    case 'connected':
+                        this.isConnected = true;
+                        status.textContent = `Connected to ${data.ip}:${data.port}`;
+                        status.className = 'status connected';
+                        connectBtn.textContent = 'Disconnect';
+                        connectBtn.disabled = false;
+                        document.getElementById('realtime-indicator').classList.add('active');
+
+                        if (resolve) resolve();
+                        break;
+
+                    case 'nmea':
+                        // Process incoming NMEA sentence
+                        this.processSingleNMEA(data.sentence);
+                        break;
+
+                    case 'tcp_disconnected':
+                        console.log('TCP source disconnected:', data.message);
+                        this.handleDisconnection();
+                        break;
+
+                    case 'tcp_error':
+                        console.error('TCP error:', data.message);
+                        status.textContent = `TCP Error: ${data.message}`;
+                        status.className = 'status error';
+                        if (reject) reject(new Error(data.message));
+                        break;
+
+                    case 'error':
+                        console.error('Proxy error:', data.message);
+                        status.textContent = `Error: ${data.message}`;
+                        status.className = 'status error';
+                        if (reject) reject(new Error(data.message));
+                        break;
+
+                    case 'pong':
+                        // Handle ping/pong for connection health
+                        break;
+
+                    default:
+                        console.log('Unknown message type:', data.type);
+                }
+            }
+
+            handleDisconnection() {
+                this.isConnected = false;
+                const status = document.getElementById('tcp-status');
+                const connectBtn = document.getElementById('tcp-connect');
+
+                status.textContent = 'Disconnected';
+                status.className = 'status disconnected';
+                connectBtn.textContent = 'Connect';
+                connectBtn.disabled = false;
+
+                document.getElementById('realtime-indicator').classList.remove('active');
+
+                if (this.tcpSocket) {
+                    this.tcpSocket.close();
+                    this.tcpSocket = null;
+                }
+            }
+
+            disconnectTCP() {
+                if (this.tcpSocket && this.tcpSocket.readyState === WebSocket.OPEN) {
+                    // Send disconnect message to proxy
+                    this.tcpSocket.send(JSON.stringify({
+                        type: 'disconnect'
+                    }));
+                }
+
+                this.handleDisconnection();
+            }
+
+
+
+            processNMEAData(text) {
+                text.split('\n').forEach(s => this.processSingleNMEA(s.trim())); this.scheduleUpdate();
+            }
+
+            processText() {
+                this.processNMEAData(document.getElementById('nmea-textarea').value.trim());
+            }
+
+            applyFilters() {
+                this.filters.mmsi = document.getElementById('mmsi-filter').value.trim() || null;
+                this.filters.startTime = document.getElementById('start-time').value ? new Date(document.getElementById('start-time').value) : null;
+                this.filters.endTime = document.getElementById('end-time').value ? new Date(document.getElementById('end-time').value) : null;
+                this.scheduleUpdate();
+            }
+
+            clearFilters() {
+                document.getElementById('mmsi-filter').value = '';
+                document.getElementById('start-time').value = '';
+                document.getElementById('end-time').value = '';
+                this.filters = { mmsi: null, startTime: null, endTime: null };
+                this.scheduleUpdate();
+            }
+
+            initTimeSlider() { }
+            startPlayback() { }
+            pausePlayback() { }
+            stopPlayback() { }
+            resetPlayback() { }
+            prepareHistoricalPlayback() { }
+
+            updateStats() {
+                document.getElementById('total-messages').textContent = this.stats.totalMessages;
+                document.getElementById('valid-positions').textContent = this.stats.validPositions;
+                document.getElementById('unique-vessels').textContent = this.stats.uniqueVessels;
+                document.getElementById('messages-per-sec').textContent = this.stats.messagesPerSec.toFixed(1);
+            }
+
+            startStatsTimer() {
+                setInterval(() => {
+                    const now = Date.now();
+                    if (now - this.stats.lastSecondTime >= 1000) {
+                        this.stats.messagesPerSec = (this.stats.totalMessages - this.stats.lastSecondCount) / ((now - this.stats.lastSecondTime) / 1000);
+                        this.stats.lastSecondCount = this.stats.totalMessages;
+                        this.stats.lastSecondTime = now;
+                        this.updateStats();
+                    }
+                }, 1000);
+            }
+        }
+        document.addEventListener('DOMContentLoaded', () => { new OptimizedNMEAAISDecoder(); });
+    </script>
+</body>
+
+</html>
