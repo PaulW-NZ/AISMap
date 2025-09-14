@@ -1,7 +1,7 @@
 
 # AISMap
 
-Decode and map NMEA Automated Identification System (AIS) sentences.
+Decode and map NMEA Automated Identification System (AIS) sentences - all in the browser.
 
 A quick and dirty monolithic HTML (with CSS and Javascript) tool to read, decode, and map NMEA AIS. Can process real-time via a websocket proxy (included), from a file of NMEA (AIVDM) sentences, or sentences pasted in manually.
 
