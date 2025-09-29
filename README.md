@@ -26,7 +26,7 @@ A quick and dirty monolithic HTML (with CSS and Javascript) tool to read, decode
 ### Basic Usage
 Load the file directly in your browser:
 ```
-file:///$PATH/ais_map.html
+file:///$PATH/index.html
 ```
 
 ### Real-time Processing
